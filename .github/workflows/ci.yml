@@ -62,6 +62,7 @@ jobs:
         run: docker compose -f compose.yaml -f compose.dev.yaml up -d --build --wait
       - name: Run PostgreSQL integration tests
         env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/postgres
           RUN_DB_TESTS: "1"
         run: uv run --no-sync python -m unittest discover -s tests -v
       - name: Print service logs on failure

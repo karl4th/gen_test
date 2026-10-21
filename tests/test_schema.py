@@ -4,7 +4,6 @@ import unittest
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from mdl_ml.config import Settings
 from mdl_ml.database import create_engine
 from mdl_ml.domain.statuses import AttemptStatus, PaymentStatus, TaskStatus
 from mdl_ml.models import Attempt, LedgerEntry, Leg, Model, Payment, Task, User
@@ -15,7 +14,12 @@ from mdl_ml.models import Attempt, LedgerEntry, Leg, Model, Payment, Task, User
 )
 class SchemaTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.engine = create_engine(Settings().database_url)
+        self.engine = create_engine(
+            os.getenv(
+                "DATABASE_URL",
+                "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/postgres",
+            )
+        )
         self.connection = await self.engine.connect()
         self.transaction = await self.connection.begin()
 
