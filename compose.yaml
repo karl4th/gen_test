@@ -17,5 +17,65 @@ services:
       retries: 10
       start_period: 10s
 
+  api:
+    build: .
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn mdl_ml.app:app --host 0.0.0.0 --port 8000 --workers 4"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/postgres
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-postgres}
+      PROVIDER_ALPHA_URL: http://alpha:8000
+      PROVIDER_BETA_URL: http://beta:8000
+      PUBLIC_CALLBACK_BASE_URL: http://api:8000
+      PROVIDER_TIMEOUT_SECONDS: ${PROVIDER_TIMEOUT_SECONDS:-60}
+      PROVIDER_HTTP_TIMEOUT_SECONDS: ${PROVIDER_HTTP_TIMEOUT_SECONDS:-5}
+      WATCHDOG_INTERVAL_SECONDS: ${WATCHDOG_INTERVAL_SECONDS:-1}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      alpha:
+        condition: service_healthy
+      beta:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  alpha:
+    build: .
+    restart: unless-stopped
+    command: ["uvicorn", "mdl_ml.fake_provider:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PROVIDER_NAME: alpha
+      PUBLIC_CALLBACK_BASE_URL: http://api:8000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-postgres}
+    ports:
+      - "127.0.0.1:8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  beta:
+    build: .
+    restart: unless-stopped
+    command: ["uvicorn", "mdl_ml.fake_provider:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PROVIDER_NAME: beta
+      PUBLIC_CALLBACK_BASE_URL: http://api:8000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-postgres}
+    ports:
+      - "127.0.0.1:8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:

@@ -1,0 +1,8 @@
+.git
+.venv
+.env
+*.ru.md
+__pycache__
+.pytest_cache
+tests
+postgres_data

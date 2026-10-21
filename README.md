@@ -1,39 +1,107 @@
-# MDL ML
+# Generation service
 
-A generation-order service backed by PostgreSQL. The database schema and
-health endpoint are available; payment processing, task execution, provider
-fallback, and the watchdog are the next application components.
+An asynchronous generation-order service with token accounting in PostgreSQL.
+It charges a user once, tries eligible provider legs in priority order, and
+refunds once if no leg succeeds. The included `alpha` and `beta` services are
+configurable fake providers.
 
-Start PostgreSQL and the API from the repository root:
+## Run
 
 ```sh
-docker compose up -d --wait
-uv run mdl-ml
+cp .env.example .env
+docker compose up -d --build --wait
+curl http://127.0.0.1:8000/health
 ```
 
-`GET http://127.0.0.1:8000/health` checks the application and its database
-connection. It returns HTTP 503 if the database is unavailable.
+Compose starts PostgreSQL 16, the API with four Uvicorn workers, and one
+process for each fake provider. The API container applies Alembic migrations
+before starting. The catalog migration creates `image-fast` (2 tokens: alpha
+up to 4 references, then beta up to 10) and `video-long` (25 tokens: beta up
+to 2, then alpha up to 1 with `skip_on_moderation`).
 
-Database schema changes are managed with Alembic. See
-[migration commands](docs/migrations.md) for creating and applying revisions,
-and the [schema overview](docs/schema.md) for table guarantees.
+Users are test fixtures because registration is outside the task scope. To
+create one, run:
 
-## Task assumptions
+```sh
+docker compose exec -T postgres psql -U postgres -d postgres -c 'INSERT INTO users DEFAULT VALUES RETURNING id;'
+```
 
-- Tokens are whole numbers stored as `BIGINT`.
-- After a moderation rejection, provider legs marked `skip_on_moderation`
-  are skipped; execution continues with the next eligible leg.
-- A payment credits tokens only when its status is `succeeded`. A `failed`
-  payment is stored without a credit.
-- Database timestamps use `timestamptz`. Deadline calculations use the
-  database's `now()`, not a worker's clock.
-- `completed` and `failed` are terminal task statuses; a task never leaves
-  either state.
-- PostgreSQL unique keys, conditional updates, row locks, and transactions
-  enforce correctness across repeated events and four workers. An application
-  existence check does not replace a database constraint.
-- Ledger entries are append-only and are the source of truth for token
-  movements.
+Credit it with a signed `POST /webhooks/payments` event, then send
+`POST /generate` with `user_id`, `model_slug`, `prompt`, and `ref_images`.
+The API also exposes `GET /tasks/{id}` and `GET /users/{id}/balance`.
+Provider webhooks go to `POST /webhooks/providers/{alpha|beta}`. Every webhook
+uses `X-Signature`: the hexadecimal HMAC-SHA256 digest of the exact request
+body, keyed by `WEBHOOK_SECRET` (`postgres` in the sample environment).
 
-Authentication, a user interface, persistent file storage, and real-money
-payments are outside this project's scope.
+The fake providers offer `PUT /testing/config` on local ports 8001 and 8002.
+The JSON fields are `failure_rate` (0–1), `failure_type` (`technical`,
+`moderation`, `payload`), `sync_failure` (`503`, `timeout`, or null),
+`delay_seconds` (null means random 2–20 seconds), `duplicate_webhooks`, and
+`no_webhook`. They return HTTP 202 with an external ID before sending a
+callback. The testing endpoint configures one provider process at a time.
+
+## Tests and migrations
+
+```sh
+RUN_DB_TESTS=1 uv run python -m unittest discover -s tests -v
+```
+
+These tests use the compose API and real PostgreSQL. They cover 20 concurrent
+copies of one payment, 10 concurrent final-leg failures, success on the second
+leg, and a completion arriving after the watchdog has refunded the order.
+The schema test also checks database constraints. See
+[migration commands](docs/migrations.md) for applying and creating revisions;
+see [schema](docs/schema.md) for the table-level invariants.
+Python dependencies are locked in `uv.lock`; `requirements.txt` is the
+export used by the Docker image. Refresh it after changing dependencies with
+`uv export --format requirements-txt --no-dev --no-emit-project --no-hashes -o requirements.txt`.
+
+## Consistency rules
+
+Tokens are integral `BIGINT` values. A payment is stored under its primary
+key; only `succeeded` credits tokens. The payment row, ledger row, and balance
+change commit in one transaction. A deferred PostgreSQL constraint trigger
+also rejects a commit where a user's balance differs from that user's ledger
+sum. A repeated identical webhook conflicts on
+the primary key and has no effect. A changed event with the same payment ID
+returns 409. The ledger has a partial unique index on payment IDs for
+payment entries.
+
+Generation locks the user row before checking the three-active-task limit
+and applying a conditional debit. This serializes simultaneous orders for
+one user. The task, debit, charge ledger entry, and first attempt commit
+together. If no leg accepts the reference count, the request returns 400
+before the debit. Insufficient balance returns 402; three active tasks return
+429. Each task has at most one charge ledger row by a partial unique index.
+
+Each callback, synchronous dispatch failure, and watchdog timeout uses the
+same state transition. It locks the task row, checks that the attempt is still
+current and the task is running, then conditionally updates the attempt and
+task. A technical failure tries the next eligible leg. Moderation skips later
+legs marked `skip_on_moderation`. Payload failure is terminal. When no leg
+remains, the same transaction marks the task failed, inserts its refund ledger
+row, and increments the balance. The partial unique refund index makes a
+second refund impossible. Balance changes and ledger entries always commit
+or roll back together; ledger rows cannot be updated or deleted.
+
+Deadlines are `timestamptz` values calculated with PostgreSQL `now()`.
+Every API worker runs a watchdog; conditional attempt updates let only one
+worker claim a pending dispatch. The attempt's external ID is fixed before
+the HTTP request and remains stable for retries. If a worker dies after
+committing a task but before dispatch, the watchdog finds its pending attempt.
+If it dies after marking an attempt sent, the watchdog advances it when its
+deadline passes. A process crash during a payment or provider webhook rolls
+back the entire transaction; a retried webhook can then process it. A crash
+after commit makes the replay a no-op. An HTTP timeout can leave an uncertain
+provider request; the fixed external ID lets the fake provider recognize the
+same attempt, while the database accepts only the current attempt's result.
+
+**Late completion policy:** the first committed transition wins. If a
+completion acquires the task lock before the watchdog, the task completes and
+is not refunded. If the watchdog times out first, the attempt is no longer
+current or the task is terminal. The callback stores its URL in
+`late_result_url` for audit but cannot change the task status, result, or
+balance. This avoids both a result and a refund for one order.
+
+Authentication, UI, durable file storage, and real payments are outside the
+scope of this service.

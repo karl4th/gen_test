@@ -19,3 +19,9 @@ class AttemptStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+
+
+class ProviderErrorType(StrEnum):
+    TECHNICAL = "technical"
+    MODERATION = "moderation"
+    PAYLOAD = "payload"

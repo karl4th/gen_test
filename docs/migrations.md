@@ -4,7 +4,7 @@ The application and Alembic read `DATABASE_URL` from `.env`. An environment
 variable with the same name overrides the value in that file. Run these
 commands from the repository root.
 
-Start the database:
+Start the complete stack (the API applies migrations at startup):
 
 ```sh
 docker compose up -d --wait
@@ -41,4 +41,5 @@ Run the database constraint checks against a migrated local database:
 RUN_DB_TESTS=1 uv run python -m unittest discover -s tests -v
 ```
 
-The test runs in a transaction and rolls back its sample rows.
+The schema test rolls back its sample rows. Workflow tests create independent
+users and retain their history so ledger and task transitions can be inspected.

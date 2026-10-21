@@ -38,6 +38,13 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await savepoint.rollback()
 
+    async def test_balance_change_without_ledger_is_rejected_at_commit(self) -> None:
+        async with self.engine.begin() as conn:
+            user_id = (await conn.execute(text("INSERT INTO users DEFAULT VALUES RETURNING id"))).scalar_one()
+        with self.assertRaises(IntegrityError):
+            async with self.engine.begin() as conn:
+                await conn.execute(text("UPDATE users SET balance = 1 WHERE id = :id"), {"id": user_id})
+
     async def test_seven_tables_and_database_invariants(self) -> None:
         table_names = await self.connection.run_sync(
             lambda connection: set(inspect(connection).get_table_names())
