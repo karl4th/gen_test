@@ -7,7 +7,14 @@ authors = [
     { name = "Bagzhan", email = "bagzhankarl@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.32.0",
+    "fastapi>=0.157.0",
+    "pydantic-settings>=2.16.1",
+    "sqlalchemy[asyncio]>=2.1.5",
+    "uvicorn[standard]>=0.54.0",
+]
 
 [project.scripts]
 mdl-ml = "mdl_ml:main"
