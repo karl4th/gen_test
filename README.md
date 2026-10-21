@@ -52,9 +52,14 @@ leg, and a completion arriving after the watchdog has refunded the order.
 The schema test also checks database constraints. See
 [migration commands](docs/migrations.md) for applying and creating revisions;
 see [schema](docs/schema.md) for the table-level invariants.
-Python dependencies are locked in `uv.lock`; `requirements.txt` is the
-export used by the Docker image. Refresh it after changing dependencies with
-`uv export --format requirements-txt --no-dev --no-emit-project --no-hashes -o requirements.txt`.
+Python dependencies are locked in `uv.lock`. Docker installs wheel URLs with
+SHA256 checks from `docker/requirements-{arm64,amd64}.txt`, avoiding index
+resolution. After changing dependencies, refresh both exports:
+
+```sh
+uv export --format requirements-txt --no-dev --no-emit-project --no-hashes -o requirements.txt
+uv run python scripts/export_docker_wheels.py
+```
 
 ## Consistency rules
 
