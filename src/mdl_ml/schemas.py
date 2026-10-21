@@ -11,9 +11,11 @@ from mdl_ml.domain.statuses import (
     TaskStatus,
 )
 
+BIGINT_MAX = 2**63 - 1
+
 
 class GenerateRequest(BaseModel):
-    user_id: int = Field(gt=0)
+    user_id: int = Field(gt=0, le=BIGINT_MAX)
     model_slug: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     ref_images: list[str] = Field(default_factory=list)
@@ -25,8 +27,8 @@ class GenerateResponse(BaseModel):
 
 class PaymentWebhook(BaseModel):
     payment_id: str = Field(min_length=1)
-    user_id: int = Field(gt=0)
-    tokens: int = Field(gt=0)
+    user_id: int = Field(gt=0, le=BIGINT_MAX)
+    tokens: int = Field(gt=0, le=BIGINT_MAX)
     status: PaymentStatus
 
 

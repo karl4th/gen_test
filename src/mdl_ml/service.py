@@ -19,7 +19,7 @@ from mdl_ml.domain.statuses import (
     TaskStatus,
 )
 from mdl_ml.models import Attempt, LedgerEntry, Leg, Model, Payment, Task, User
-from mdl_ml.schemas import GenerateRequest, PaymentWebhook, ProviderWebhook
+from mdl_ml.schemas import BIGINT_MAX, GenerateRequest, PaymentWebhook, ProviderWebhook
 
 log = logging.getLogger(__name__)
 ACTIVE = (TaskStatus.PENDING, TaskStatus.RUNNING)
@@ -69,11 +69,17 @@ async def record_payment(engine: AsyncEngine, event: PaymentWebhook) -> None:
                     payment_id=event.payment_id,
                 )
             )
-            await conn.execute(
+            credited = await conn.execute(
                 update(User)
-                .where(User.id == event.user_id)
+                .where(
+                    User.id == event.user_id,
+                    User.balance <= BIGINT_MAX - event.tokens,
+                )
                 .values(balance=User.balance + event.tokens)
+                .returning(User.id)
             )
+            if credited.scalar_one_or_none() is None:
+                raise HTTPException(409, "Balance limit exceeded")
 
 
 async def create_generation(engine: AsyncEngine, data: GenerateRequest) -> UUID:

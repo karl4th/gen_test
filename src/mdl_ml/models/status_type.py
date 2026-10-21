@@ -5,7 +5,6 @@ from sqlalchemy import CheckConstraint, Text, column
 from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
 
-
 StatusEnum = TypeVar("StatusEnum", bound=StrEnum)
 
 

@@ -27,7 +27,16 @@ build-backend = "uv_build"
 [tool.alembic]
 script_location = "%(here)s/alembic"
 
+[tool.ruff]
+extend-exclude = ["alembic/versions"]
+
+[tool.mypy]
+files = ["src/mdl_ml"]
+plugins = ["pydantic.mypy"]
+strict = true
+
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "ruff>=0.17.1",
 ]

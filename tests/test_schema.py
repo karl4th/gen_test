@@ -10,7 +10,9 @@ from mdl_ml.domain.statuses import AttemptStatus, PaymentStatus, TaskStatus
 from mdl_ml.models import Attempt, LedgerEntry, Leg, Model, Payment, Task, User
 
 
-@unittest.skipUnless(os.getenv("RUN_DB_TESTS") == "1", "Set RUN_DB_TESTS=1 to run database tests")
+@unittest.skipUnless(
+    os.getenv("RUN_DB_TESTS") == "1", "Set RUN_DB_TESTS=1 to run database tests"
+)
 class SchemaTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.engine = create_engine(Settings().database_url)
@@ -40,10 +42,53 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_balance_change_without_ledger_is_rejected_at_commit(self) -> None:
         async with self.engine.begin() as conn:
-            user_id = (await conn.execute(text("INSERT INTO users DEFAULT VALUES RETURNING id"))).scalar_one()
+            user_id = (
+                await conn.execute(
+                    text("INSERT INTO users DEFAULT VALUES RETURNING id")
+                )
+            ).scalar_one()
         with self.assertRaises(IntegrityError):
             async with self.engine.begin() as conn:
-                await conn.execute(text("UPDATE users SET balance = 1 WHERE id = :id"), {"id": user_id})
+                await conn.execute(
+                    text("UPDATE users SET balance = 1 WHERE id = :id"), {"id": user_id}
+                )
+
+    async def test_ledger_insert_without_balance_change_is_rejected_at_commit(
+        self,
+    ) -> None:
+        async with self.engine.begin() as conn:
+            user_id = (
+                await conn.execute(
+                    text("INSERT INTO users DEFAULT VALUES RETURNING id")
+                )
+            ).scalar_one()
+        payment_id = f"orphan-ledger-{user_id}"
+        with self.assertRaises(IntegrityError):
+            async with self.engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO payments "
+                        "(payment_id, user_id, tokens, status, received_at) "
+                        "VALUES (:payment_id, :user_id, 1, 'succeeded', now())"
+                    ),
+                    {"payment_id": payment_id, "user_id": user_id},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO ledger "
+                        "(user_id, delta, reason, payment_id) "
+                        "VALUES (:user_id, 1, 'payment', :payment_id)"
+                    ),
+                    {"payment_id": payment_id, "user_id": user_id},
+                )
+        async with self.engine.connect() as conn:
+            count = (
+                await conn.execute(
+                    text("SELECT count(*) FROM payments WHERE payment_id = :id"),
+                    {"id": payment_id},
+                )
+            ).scalar_one()
+        self.assertEqual(count, 0)
 
     async def test_seven_tables_and_database_invariants(self) -> None:
         table_names = await self.connection.run_sync(
@@ -55,27 +100,45 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         )
 
         user_id = (
-            await self.connection.execute(User.__table__.insert().values(balance=0).returning(User.id))
+            await self.connection.execute(
+                User.__table__.insert().values(balance=0).returning(User.id)
+            )
         ).scalar_one()
         other_user_id = (
-            await self.connection.execute(User.__table__.insert().values(balance=0).returning(User.id))
+            await self.connection.execute(
+                User.__table__.insert().values(balance=0).returning(User.id)
+            )
         ).scalar_one()
         await self.assert_integrity_error(User.__table__.insert().values(balance=-1))
 
-        await self.connection.execute(Model.__table__.insert().values(slug="sample", price=10))
-        await self.assert_integrity_error(Model.__table__.insert().values(slug="free", price=0))
+        await self.connection.execute(
+            Model.__table__.insert().values(slug="sample", price=10)
+        )
+        await self.assert_integrity_error(
+            Model.__table__.insert().values(slug="free", price=0)
+        )
 
         leg_id = (
             await self.connection.execute(
                 Leg.__table__.insert()
-                .values(model_slug="sample", provider="provider-a", priority=0, max_ref_images=2)
+                .values(
+                    model_slug="sample",
+                    provider="provider-a",
+                    priority=0,
+                    max_ref_images=2,
+                )
                 .returning(Leg.id)
             )
         ).scalar_one()
         second_leg_id = (
             await self.connection.execute(
                 Leg.__table__.insert()
-                .values(model_slug="sample", provider="provider-b", priority=1, max_ref_images=0)
+                .values(
+                    model_slug="sample",
+                    provider="provider-b",
+                    priority=1,
+                    max_ref_images=0,
+                )
                 .returning(Leg.id)
             )
         ).scalar_one()
@@ -116,18 +179,22 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        task_values = dict(
-            user_id=user_id,
-            model_slug="sample",
-            prompt="example",
-            price=10,
-            status=TaskStatus.PENDING,
-        )
+        task_values = {
+            "user_id": user_id,
+            "model_slug": "sample",
+            "prompt": "example",
+            "price": 10,
+            "status": TaskStatus.PENDING,
+        }
         task_id = (
-            await self.connection.execute(Task.__table__.insert().values(**task_values).returning(Task.id))
+            await self.connection.execute(
+                Task.__table__.insert().values(**task_values).returning(Task.id)
+            )
         ).scalar_one()
         second_task_id = (
-            await self.connection.execute(Task.__table__.insert().values(**task_values).returning(Task.id))
+            await self.connection.execute(
+                Task.__table__.insert().values(**task_values).returning(Task.id)
+            )
         ).scalar_one()
         task_status = (
             await self.connection.execute(select(Task.status).where(Task.id == task_id))
@@ -139,7 +206,9 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             .values(status=TaskStatus.COMPLETED, updated_at=text("now()"))
         )
         completed_status = (
-            await self.connection.execute(select(Task.status).where(Task.id == second_task_id))
+            await self.connection.execute(
+                select(Task.status).where(Task.id == second_task_id)
+            )
         ).scalar_one()
         self.assertIs(completed_status, TaskStatus.COMPLETED)
         await self.assert_integrity_error(
@@ -166,7 +235,9 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             )
         ).scalar_one()
         attempt_status = (
-            await self.connection.execute(select(Attempt.status).where(Attempt.id == attempt_id))
+            await self.connection.execute(
+                select(Attempt.status).where(Attempt.id == attempt_id)
+            )
         ).scalar_one()
         self.assertIs(attempt_status, AttemptStatus.SENT)
         await self.assert_integrity_error(
@@ -193,10 +264,14 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await self.connection.execute(
-            Task.__table__.update().where(Task.id == task_id).values(current_attempt_id=attempt_id)
+            Task.__table__.update()
+            .where(Task.id == task_id)
+            .values(current_attempt_id=attempt_id)
         )
         await self.assert_integrity_error(
-            Task.__table__.update().where(Task.id == second_task_id).values(current_attempt_id=attempt_id)
+            Task.__table__.update()
+            .where(Task.id == second_task_id)
+            .values(current_attempt_id=attempt_id)
         )
 
         payment_entry = LedgerEntry.__table__.insert().values(
@@ -206,11 +281,16 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_integrity_error(payment_entry)
         await self.assert_integrity_error(
             LedgerEntry.__table__.insert().values(
-                user_id=other_user_id, delta=50, reason="payment", payment_id="payment-2"
+                user_id=other_user_id,
+                delta=50,
+                reason="payment",
+                payment_id="payment-2",
             )
         )
         await self.assert_integrity_error(
-            LedgerEntry.__table__.insert().values(user_id=user_id, delta=100, reason="payment")
+            LedgerEntry.__table__.insert().values(
+                user_id=user_id, delta=100, reason="payment"
+            )
         )
 
         charge_entry = LedgerEntry.__table__.insert().values(
@@ -220,11 +300,16 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_integrity_error(charge_entry)
         await self.assert_integrity_error(
             LedgerEntry.__table__.insert().values(
-                user_id=other_user_id, delta=-10, reason="charge", task_id=second_task_id
+                user_id=other_user_id,
+                delta=-10,
+                reason="charge",
+                task_id=second_task_id,
             )
         )
         await self.assert_integrity_error(
-            LedgerEntry.__table__.insert().values(user_id=user_id, delta=-10, reason="charge")
+            LedgerEntry.__table__.insert().values(
+                user_id=user_id, delta=-10, reason="charge"
+            )
         )
 
         refund_entry = LedgerEntry.__table__.insert().values(
@@ -233,8 +318,6 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         await self.connection.execute(refund_entry)
         await self.assert_integrity_error(refund_entry)
 
-        await self.assert_database_error(
-            LedgerEntry.__table__.update().values(delta=1)
-        )
+        await self.assert_database_error(LedgerEntry.__table__.update().values(delta=1))
         await self.assert_database_error(LedgerEntry.__table__.delete())
         await self.assert_database_error(text("TRUNCATE ledger"))

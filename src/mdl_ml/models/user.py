@@ -9,4 +9,6 @@ class User(Base):
     __table_args__ = (CheckConstraint("balance >= 0", name="balance_nonnegative"),)
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    balance: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    balance: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )

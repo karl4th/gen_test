@@ -1,10 +1,10 @@
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
 from uuid import UUID
 
-from asyncpg import PostgresError
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Path, Request, Response
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +14,7 @@ from mdl_ml.config import Settings
 from mdl_ml.database import create_engine
 from mdl_ml.models import Attempt, LedgerEntry, Leg, Task, User
 from mdl_ml.schemas import (
+    BIGINT_MAX,
     AttemptRow,
     BalanceResponse,
     GenerateRequest,
@@ -34,7 +35,7 @@ from mdl_ml.service import (
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     engine = create_engine(settings.database_url)
     app.state.database = engine
@@ -68,7 +69,7 @@ async def health(request: Request, response: Response) -> HealthResponse:
         async with asyncio.timeout(5):
             async with request.app.state.database.connect() as connection:
                 await connection.execute(text("SELECT 1"))
-    except (SQLAlchemyError, PostgresError, OSError, TimeoutError):
+    except (SQLAlchemyError, OSError, TimeoutError):
         response.status_code = 503
         return HealthResponse(status="error", database="error")
     return HealthResponse(status="ok", database="ok")
@@ -83,6 +84,8 @@ async def generate(data: GenerateRequest, request: Request) -> GenerateResponse:
                 select(Task.current_attempt_id).where(Task.id == task_id)
             )
         ).scalar_one()
+    if attempt_id is None:
+        raise RuntimeError("New task has no attempt")
     await dispatch_attempt(
         request.app.state.database, request.app.state.settings, attempt_id
     )
@@ -167,7 +170,9 @@ async def get_task(task_id: UUID, request: Request) -> TaskResponse:
 
 
 @app.get("/users/{user_id}/balance", response_model=BalanceResponse)
-async def get_balance(user_id: int, request: Request) -> BalanceResponse:
+async def get_balance(
+    request: Request, user_id: int = Path(gt=0, le=BIGINT_MAX)
+) -> BalanceResponse:
     async with AsyncSession(request.app.state.database) as conn:
         # A shared row lock keeps the balance and ledger page consistent.
         user = (

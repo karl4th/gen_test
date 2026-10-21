@@ -22,7 +22,9 @@ from mdl_ml.models.base import Base
 class LedgerEntry(Base):
     __tablename__ = "ledger"
     __table_args__ = (
-        CheckConstraint("reason IN ('payment', 'charge', 'refund')", name="reason_valid"),
+        CheckConstraint(
+            "reason IN ('payment', 'charge', 'refund')", name="reason_valid"
+        ),
         CheckConstraint(
             "(reason = 'payment' AND payment_id IS NOT NULL AND task_id IS NULL AND delta > 0) OR "
             "(reason = 'charge' AND task_id IS NOT NULL AND payment_id IS NULL AND delta < 0) OR "

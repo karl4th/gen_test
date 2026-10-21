@@ -34,7 +34,7 @@ class ProviderTask(BaseModel):
 
 
 behavior = Behavior()
-active: set[asyncio.Task] = set()
+active: set[asyncio.Task[None]] = set()
 accepted: set[str] = set()
 
 
@@ -55,7 +55,7 @@ async def configure(value: Behavior) -> Behavior:
 
 
 async def send_webhook(
-    external_id: str, result: dict, delay: float, duplicate: bool
+    external_id: str, result: dict[str, str], delay: float, duplicate: bool
 ) -> None:
     await asyncio.sleep(delay)
     body = json.dumps(result, separators=(",", ":")).encode()

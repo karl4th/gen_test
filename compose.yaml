@@ -18,7 +18,7 @@ services:
       start_period: 10s
 
   api:
-    build: .
+    image: ghcr.io/karl4th/gen_test:${IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["sh", "-c", "alembic upgrade head && exec uvicorn mdl_ml.app:app --host 0.0.0.0 --port 8000 --workers 4"]
     environment:
@@ -46,7 +46,7 @@ services:
       retries: 10
 
   alpha:
-    build: .
+    image: ghcr.io/karl4th/gen_test:${IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["uvicorn", "mdl_ml.fake_provider:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
@@ -62,7 +62,7 @@ services:
       retries: 10
 
   beta:
-    build: .
+    image: ghcr.io/karl4th/gen_test:${IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["uvicorn", "mdl_ml.fake_provider:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:

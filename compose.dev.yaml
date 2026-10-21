@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    pull_policy: build
+
+  alpha:
+    build: .
+    pull_policy: build
+
+  beta:
+    build: .
+    pull_policy: build

@@ -14,23 +14,31 @@ class Attempt(Base):
     __tablename__ = "attempts"
     __table_args__ = (
         UniqueConstraint("task_id", "leg_id", name="uq_attempts_task_id_leg_id"),
-        UniqueConstraint("provider", "external_id", name="uq_attempts_provider_external_id"),
+        UniqueConstraint(
+            "provider", "external_id", name="uq_attempts_provider_external_id"
+        ),
         UniqueConstraint("task_id", "id", name="uq_attempts_task_id_id"),
         status_check(AttemptStatus),
     )
 
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
     )
     task_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+        PG_UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     leg_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("legs.id", ondelete="RESTRICT"), nullable=False
     )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     external_id: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[AttemptStatus] = mapped_column(StatusType(AttemptStatus), nullable=False)
+    status: Mapped[AttemptStatus] = mapped_column(
+        StatusType(AttemptStatus), nullable=False
+    )
     error_type: Mapped[str | None] = mapped_column(Text)
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
