@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Hello from mdl-ml!")
+    import uvicorn
+
+    uvicorn.run("mdl_ml.app:app", host="127.0.0.1", port=8000)
