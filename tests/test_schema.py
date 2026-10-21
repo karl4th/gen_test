@@ -2,7 +2,7 @@ import os
 import unittest
 
 from sqlalchemy import inspect, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from mdl_ml.config import Settings
 from mdl_ml.database import create_engine
@@ -26,6 +26,14 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         savepoint = await self.connection.begin_nested()
         try:
             with self.assertRaises(IntegrityError):
+                await self.connection.execute(statement)
+        finally:
+            await savepoint.rollback()
+
+    async def assert_database_error(self, statement) -> None:
+        savepoint = await self.connection.begin_nested()
+        try:
+            with self.assertRaises(DBAPIError):
                 await self.connection.execute(statement)
         finally:
             await savepoint.rollback()
@@ -74,7 +82,7 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             payment_id="payment-1",
             user_id=user_id,
             tokens=100,
-            status=PaymentStatus.RECEIVED,
+            status=PaymentStatus.SUCCEEDED,
             received_at=text("now()"),
         )
         await self.connection.execute(payment)
@@ -83,12 +91,12 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
                 select(Payment.status).where(Payment.payment_id == "payment-1")
             )
         ).scalar_one()
-        self.assertIs(payment_status, PaymentStatus.RECEIVED)
+        self.assertIs(payment_status, PaymentStatus.SUCCEEDED)
         await self.assert_integrity_error(payment)
         await self.assert_integrity_error(
             text(
                 "INSERT INTO payments (payment_id, user_id, tokens, status, received_at) "
-                "VALUES ('payment-invalid', :user_id, 1, 'unknown', now())"
+                "VALUES ('payment-invalid', :user_id, 1, 'received', now())"
             ).bindparams(user_id=user_id)
         )
         await self.connection.execute(
@@ -96,7 +104,7 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
                 payment_id="payment-2",
                 user_id=user_id,
                 tokens=50,
-                status="received",
+                status=PaymentStatus.FAILED,
                 received_at=text("now()"),
             )
         )
@@ -118,10 +126,19 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             await self.connection.execute(select(Task.status).where(Task.id == task_id))
         ).scalar_one()
         self.assertIs(task_status, TaskStatus.PENDING)
+        await self.connection.execute(
+            Task.__table__.update()
+            .where(Task.id == second_task_id, Task.status == TaskStatus.PENDING)
+            .values(status=TaskStatus.COMPLETED, updated_at=text("now()"))
+        )
+        completed_status = (
+            await self.connection.execute(select(Task.status).where(Task.id == second_task_id))
+        ).scalar_one()
+        self.assertIs(completed_status, TaskStatus.COMPLETED)
         await self.assert_integrity_error(
             text(
                 "INSERT INTO tasks (user_id, model_slug, prompt, price, status) "
-                "VALUES (:user_id, 'sample', 'invalid status', 10, 'unknown')"
+                "VALUES (:user_id, 'sample', 'invalid status', 10, 'succeeded')"
             ).bindparams(user_id=user_id)
         )
         await self.assert_integrity_error(
@@ -208,3 +225,9 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.connection.execute(refund_entry)
         await self.assert_integrity_error(refund_entry)
+
+        await self.assert_database_error(
+            LedgerEntry.__table__.update().values(delta=1)
+        )
+        await self.assert_database_error(LedgerEntry.__table__.delete())
+        await self.assert_database_error(text("TRUNCATE ledger"))

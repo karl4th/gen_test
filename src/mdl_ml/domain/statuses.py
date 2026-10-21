@@ -2,15 +2,14 @@ from enum import StrEnum
 
 
 class PaymentStatus(StrEnum):
-    RECEIVED = "received"
-    CREDITED = "credited"
-    REJECTED = "rejected"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
-    SUCCEEDED = "succeeded"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
