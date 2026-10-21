@@ -49,6 +49,8 @@ class LedgerEntry(Base):
             unique=True,
             postgresql_where=text("reason = 'refund'"),
         ),
+        # Serves the balance trigger's per-user sum and the latest-entries page.
+        Index("ix_ledger_user_id_id", "user_id", "id"),
         ForeignKeyConstraint(
             ["user_id", "payment_id"],
             ["payments.user_id", "payments.payment_id"],

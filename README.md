@@ -100,10 +100,18 @@ change commit in one transaction. A deferred PostgreSQL constraint trigger
 also rejects a commit where a user's balance differs from that user's ledger
 sum. A repeated identical webhook conflicts on
 the primary key and has no effect. A changed event with the same payment ID
-returns 409. Values outside the signed `BIGINT` range are rejected with 422;
-an otherwise valid payment that would overflow the user's balance returns 409
-and rolls back without storing the payment. The ledger has a partial unique
-index on payment IDs for payment entries.
+returns 409. Values outside the signed `BIGINT` range are rejected with 422.
+A payment locks the user row and keeps room to refund every active task: if
+the balance plus the active tasks' prices plus the payment would exceed the
+`BIGINT` maximum, it returns 409 and rolls back without storing the payment.
+Charges and refunds only move tokens between the balance and that reserve,
+so a later refund cannot overflow. The ledger has a partial unique index on
+payment IDs for payment entries.
+
+Request fields have length limits, rejected with 422: payment and provider
+external IDs up to 200 characters, prompts up to 10,000, at most 100
+reference images of up to 2,048 characters each, and result URLs up to
+2,048. Within that limit, a reference count no leg accepts still returns 400.
 
 Generation locks the user row before checking the three-active-task limit
 and applying a conditional debit. This serializes simultaneous orders for
@@ -126,7 +134,9 @@ Deadlines are `timestamptz` values calculated with PostgreSQL `now()`.
 `PROVIDER_TIMEOUT` defaults to 60 seconds; `PROVIDER_HTTP_TIMEOUT_SECONDS`
 limits only the initial POST to a provider.
 Every API worker runs a watchdog; conditional attempt updates let only one
-worker claim a pending dispatch. The attempt's external ID is fixed before
+worker claim a pending dispatch. The watchdog handles each attempt
+separately, so an error on one attempt is logged and does not stop the rest
+of the batch. The attempt's external ID is fixed before
 the HTTP request and remains stable for retries. If a worker dies after
 committing a task but before dispatch, the watchdog finds its pending attempt.
 If it dies after marking an attempt sent, the watchdog advances it when its

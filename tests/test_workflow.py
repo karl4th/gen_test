@@ -296,6 +296,220 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             maximum,
         )
 
+    async def test_payment_keeps_room_to_refund_active_tasks(self) -> None:
+        maximum = 2**63 - 1
+        await self.credit()
+        task_id = await self.generate()
+        task = (await self.client.get(f"/tasks/{task_id}")).json()
+        reserved_id = str(uuid4())
+        response = await self.signed_post(
+            "/webhooks/payments",
+            {
+                "payment_id": reserved_id,
+                "user_id": self.user_id,
+                "tokens": maximum - 98,
+                "status": "succeeded",
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        await self.credit(maximum - 100)
+        response = await self.signed_post(
+            "/webhooks/providers/alpha",
+            {
+                "external_id": task["attempts"][0]["id"],
+                "status": "failed",
+                "error_type": "payload",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        task = (await self.client.get(f"/tasks/{task_id}")).json()
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(
+            (await self.client.get(f"/users/{self.user_id}/balance")).json()["balance"],
+            maximum,
+        )
+        async with self.db.connect() as conn:
+            stored = (
+                await conn.execute(
+                    text("SELECT count(*) FROM payments WHERE payment_id = :id"),
+                    {"id": reserved_id},
+                )
+            ).scalar_one()
+        self.assertEqual(stored, 0)
+
+    async def test_watchdog_continues_after_one_attempt_fails(self) -> None:
+        maximum = 2**63 - 1
+        async with self.db.begin() as conn:
+            stuck_user = (
+                await conn.execute(
+                    text("INSERT INTO users DEFAULT VALUES RETURNING id")
+                )
+            ).scalar_one()
+        stuck_task, stuck_attempt = uuid4(), uuid4()
+        # Direct SQL builds a full balance with an active task on its last leg,
+        # so its refund overflows and the watchdog fails on it every interval.
+        async with self.db.begin() as conn:
+            leg_id = (
+                await conn.execute(
+                    text(
+                        "SELECT id FROM legs "
+                        "WHERE model_slug = 'image-fast' AND provider = 'beta'"
+                    )
+                )
+            ).scalar_one()
+            for payment_id, tokens in ((uuid4(), maximum), (uuid4(), 2)):
+                await conn.execute(
+                    text(
+                        "INSERT INTO payments "
+                        "(payment_id, user_id, tokens, status, received_at) "
+                        "VALUES (:payment_id, :user_id, :tokens, 'succeeded', now())"
+                    ),
+                    {
+                        "payment_id": str(payment_id),
+                        "user_id": stuck_user,
+                        "tokens": tokens,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO ledger (user_id, delta, reason, payment_id) "
+                        "VALUES (:user_id, :tokens, 'payment', :payment_id)"
+                    ),
+                    {
+                        "payment_id": str(payment_id),
+                        "user_id": stuck_user,
+                        "tokens": tokens,
+                    },
+                )
+            await conn.execute(
+                text(
+                    "INSERT INTO tasks "
+                    "(id, user_id, model_slug, prompt, price, status) "
+                    "VALUES (:id, :user_id, 'image-fast', 'stuck', 2, 'running')"
+                ),
+                {"id": stuck_task, "user_id": stuck_user},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO ledger (user_id, delta, reason, task_id) "
+                    "VALUES (:user_id, -2, 'charge', :task_id)"
+                ),
+                {"user_id": stuck_user, "task_id": stuck_task},
+            )
+            await conn.execute(
+                text("UPDATE users SET balance = :balance WHERE id = :id"),
+                {"balance": maximum, "id": stuck_user},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO attempts "
+                    "(id, task_id, leg_id, provider, external_id, status, "
+                    "sent_at, deadline_at) "
+                    "VALUES (:id, :task_id, :leg_id, 'beta', :external_id, "
+                    "'sent', now(), now() - interval '1 hour')"
+                ),
+                {
+                    "id": stuck_attempt,
+                    "task_id": stuck_task,
+                    "leg_id": leg_id,
+                    "external_id": str(stuck_attempt),
+                },
+            )
+            await conn.execute(
+                text(
+                    "UPDATE tasks SET current_attempt_id = :attempt_id WHERE id = :task_id"
+                ),
+                {"attempt_id": stuck_attempt, "task_id": stuck_task},
+            )
+
+        await self.credit()
+        task_id = await self.generate()
+        first = (await self.client.get(f"/tasks/{task_id}")).json()["attempts"][0]
+        async with self.db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE attempts SET deadline_at = now() - interval '1 second' "
+                    "WHERE id = :id"
+                ),
+                {"id": first["id"]},
+            )
+        task = await self.wait_task(task_id, lambda row: len(row["attempts"]) == 2)
+        self.assertEqual(task["attempts"][0]["status"], "timed_out")
+        stuck = (await self.client.get(f"/tasks/{stuck_task}")).json()
+        self.assertEqual(stuck["status"], "running")
+
+        # Spending tokens makes room, so the watchdog can now refund the task.
+        response = await self.client.post(
+            "/generate",
+            json={
+                "user_id": stuck_user,
+                "model_slug": "image-fast",
+                "prompt": "make room",
+                "ref_images": [],
+            },
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        await self.wait_task(str(stuck_task), lambda row: row["status"] == "failed")
+        spender = (await self.client.get(f"/tasks/{response.json()['task_id']}")).json()
+        response = await self.signed_post(
+            "/webhooks/providers/alpha",
+            {
+                "external_id": spender["attempts"][0]["id"],
+                "status": "completed",
+                "result_url": "https://example.invalid/room",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            (await self.client.get(f"/users/{stuck_user}/balance")).json()["balance"],
+            maximum,
+        )
+
+    async def test_oversized_inputs_are_rejected(self) -> None:
+        await self.credit()
+        payment = {
+            "payment_id": str(uuid4()).ljust(200, "p"),
+            "user_id": self.user_id,
+            "tokens": 1,
+            "status": "succeeded",
+        }
+        self.assertEqual(
+            (await self.signed_post("/webhooks/payments", payment)).status_code, 200
+        )
+        for payment_id in ("p" * 201, os.urandom(5000).hex()):
+            response = await self.signed_post(
+                "/webhooks/payments", dict(payment, payment_id=payment_id)
+            )
+            self.assertEqual(response.status_code, 422, response.text)
+
+        order = {
+            "user_id": self.user_id,
+            "model_slug": "image-fast",
+            "prompt": "p",
+            "ref_images": [],
+        }
+        for changes in (
+            {"prompt": "p" * 10_001},
+            {"ref_images": ["r"] * 101},
+            {"ref_images": ["r" * 2049]},
+        ):
+            response = await self.client.post("/generate", json=order | changes)
+            self.assertEqual(response.status_code, 422, response.text)
+        response = await self.client.post(
+            "/generate", json=order | {"prompt": "p" * 10_000}
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+
+        response = await self.signed_post(
+            "/webhooks/providers/alpha",
+            {"external_id": "e" * 201, "status": "failed", "error_type": "technical"},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            (await self.client.get(f"/users/{self.user_id}/balance")).json()["balance"],
+            99,
+        )
+
     async def test_10_parallel_final_failures_refund_once(self) -> None:
         await self.credit()
         await self.configure("alpha", sync_failure="503")

@@ -94,6 +94,23 @@ class SchemaTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
         self.assertEqual(count, 0)
 
+    async def test_hot_queries_have_indexes(self) -> None:
+        indexes = dict(
+            (
+                await self.connection.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE schemaname = 'public' "
+                        "AND tablename IN ('ledger', 'attempts')"
+                    )
+                )
+            ).all()
+        )
+        self.assertIn("(user_id, id)", indexes["ix_ledger_user_id_id"])
+        self.assertIn(
+            "(status, deadline_at)", indexes["ix_attempts_status_deadline_at"]
+        )
+
     async def test_seven_tables_and_database_invariants(self) -> None:
         table_names = await self.connection.run_sync(
             lambda connection: set(inspect(connection).get_table_names())

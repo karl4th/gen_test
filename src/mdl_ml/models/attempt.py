@@ -1,7 +1,15 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +26,8 @@ class Attempt(Base):
             "provider", "external_id", name="uq_attempts_provider_external_id"
         ),
         UniqueConstraint("task_id", "id", name="uq_attempts_task_id_id"),
+        # The watchdog polls pending and sent attempts by deadline.
+        Index("ix_attempts_status_deadline_at", "status", "deadline_at"),
         status_check(AttemptStatus),
     )
 

@@ -33,7 +33,11 @@ def verify_signature(body: bytes, signature: str | None, secret: str) -> None:
 
 async def record_payment(engine: AsyncEngine, event: PaymentWebhook) -> None:
     async with AsyncSession(engine) as conn, conn.begin():
-        if await conn.scalar(select(User.id).where(User.id == event.user_id)) is None:
+        # The row lock keeps the balance and active-task reserve below stable.
+        balance = await conn.scalar(
+            select(User.balance).where(User.id == event.user_id).with_for_update()
+        )
+        if balance is None:
             raise HTTPException(404, "Unknown user")
         inserted = await conn.execute(
             pg_insert(Payment)
@@ -61,6 +65,16 @@ async def record_payment(engine: AsyncEngine, event: PaymentWebhook) -> None:
                 raise HTTPException(409, "Payment ID has different data")
             return
         if event.status == PaymentStatus.SUCCEEDED:
+            # Keep room to refund every active task, so a refund cannot overflow.
+            reserved = (
+                await conn.execute(
+                    select(func.coalesce(func.sum(Task.price), 0)).where(
+                        Task.user_id == event.user_id, Task.status.in_(ACTIVE)
+                    )
+                )
+            ).scalar_one()
+            if balance + int(reserved) + event.tokens > BIGINT_MAX:
+                raise HTTPException(409, "Balance limit exceeded")
             await conn.execute(
                 insert(LedgerEntry).values(
                     user_id=event.user_id,
@@ -69,17 +83,11 @@ async def record_payment(engine: AsyncEngine, event: PaymentWebhook) -> None:
                     payment_id=event.payment_id,
                 )
             )
-            credited = await conn.execute(
+            await conn.execute(
                 update(User)
-                .where(
-                    User.id == event.user_id,
-                    User.balance <= BIGINT_MAX - event.tokens,
-                )
+                .where(User.id == event.user_id)
                 .values(balance=User.balance + event.tokens)
-                .returning(User.id)
             )
-            if credited.scalar_one_or_none() is None:
-                raise HTTPException(409, "Balance limit exceeded")
 
 
 async def create_generation(engine: AsyncEngine, data: GenerateRequest) -> UUID:
@@ -412,6 +420,7 @@ async def watchdog_loop(engine: AsyncEngine, settings: Settings) -> None:
                                 Attempt.status == AttemptStatus.PENDING,
                                 Attempt.deadline_at <= func.now(),
                             )
+                            .order_by(Attempt.deadline_at)
                             .limit(100)
                         )
                     )
@@ -426,25 +435,33 @@ async def watchdog_loop(engine: AsyncEngine, settings: Settings) -> None:
                                 Attempt.status == AttemptStatus.SENT,
                                 Attempt.deadline_at <= func.now(),
                             )
+                            .order_by(Attempt.deadline_at)
                             .limit(100)
                         )
                     )
                     .scalars()
                     .all()
                 )
+            # One failing attempt must not hold back the rest of the batch.
             for attempt_id in pending:
-                await dispatch_attempt(engine, settings, attempt_id)
+                try:
+                    await dispatch_attempt(engine, settings, attempt_id)
+                except Exception:
+                    log.exception("Watchdog could not dispatch %s", attempt_id)
             for attempt_id in expired:
-                next_id = await settle_attempt(
-                    engine,
-                    attempt_id,
-                    "failed",
-                    ProviderErrorType.TECHNICAL,
-                    None,
-                    timed_out=True,
-                )
-                if next_id is not None:
-                    await dispatch_attempt(engine, settings, next_id)
+                try:
+                    next_id = await settle_attempt(
+                        engine,
+                        attempt_id,
+                        "failed",
+                        ProviderErrorType.TECHNICAL,
+                        None,
+                        timed_out=True,
+                    )
+                    if next_id is not None:
+                        await dispatch_attempt(engine, settings, next_id)
+                except Exception:
+                    log.exception("Watchdog could not time out %s", attempt_id)
         except asyncio.CancelledError:
             raise
         except Exception:

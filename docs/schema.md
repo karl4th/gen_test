@@ -20,7 +20,10 @@ Composite foreign keys also require each ledger entry's user to own its
 payment or task. A database trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE`
 on `ledger`, making journal entries append-only.
 Deferred constraint triggers on users and ledger require each balance to
-equal its ledger sum when a transaction commits.
+equal its ledger sum when a transaction commits. An index on
+`ledger (user_id, id)` keeps that per-user sum and the latest-entries page
+from scanning the whole journal, and an index on
+`attempts (status, deadline_at)` serves the watchdog's deadline polling.
 
 `tasks.current_attempt_id` is optional and, when set, must refer to an
 attempt belonging to that task. `ref_images` must be a JSON array. Prices

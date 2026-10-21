@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -12,13 +12,22 @@ from mdl_ml.domain.statuses import (
 )
 
 BIGINT_MAX = 2**63 - 1
+# Identifiers are B-tree keys, and PostgreSQL rejects oversized index entries.
+ID_MAX_LENGTH = 200
+URL_MAX_LENGTH = 2048
+PROMPT_MAX_LENGTH = 10_000
+REF_IMAGES_MAX_ITEMS = 100
+
+RefImage = Annotated[str, Field(max_length=URL_MAX_LENGTH)]
 
 
 class GenerateRequest(BaseModel):
     user_id: int = Field(gt=0, le=BIGINT_MAX)
     model_slug: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    ref_images: list[str] = Field(default_factory=list)
+    prompt: str = Field(min_length=1, max_length=PROMPT_MAX_LENGTH)
+    ref_images: list[RefImage] = Field(
+        default_factory=list, max_length=REF_IMAGES_MAX_ITEMS
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -26,16 +35,16 @@ class GenerateResponse(BaseModel):
 
 
 class PaymentWebhook(BaseModel):
-    payment_id: str = Field(min_length=1)
+    payment_id: str = Field(min_length=1, max_length=ID_MAX_LENGTH)
     user_id: int = Field(gt=0, le=BIGINT_MAX)
     tokens: int = Field(gt=0, le=BIGINT_MAX)
     status: PaymentStatus
 
 
 class ProviderWebhook(BaseModel):
-    external_id: str = Field(min_length=1)
+    external_id: str = Field(min_length=1, max_length=ID_MAX_LENGTH)
     status: Literal["completed", "failed"]
-    result_url: str | None = None
+    result_url: str | None = Field(default=None, max_length=URL_MAX_LENGTH)
     error_type: ProviderErrorType | None = None
 
     @model_validator(mode="after")
