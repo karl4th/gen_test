@@ -13,6 +13,8 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/health
 ```
 
+The sample values are also Compose defaults, so `docker compose up` works
+without a local `.env` file.
 Compose starts PostgreSQL 16, the API with four Uvicorn workers, and one
 process for each fake provider. The API container applies Alembic migrations
 before starting. The catalog migration creates `image-fast` (2 tokens: alpha
@@ -90,6 +92,8 @@ second refund impossible. Balance changes and ledger entries always commit
 or roll back together; ledger rows cannot be updated or deleted.
 
 Deadlines are `timestamptz` values calculated with PostgreSQL `now()`.
+`PROVIDER_TIMEOUT` defaults to 60 seconds; `PROVIDER_HTTP_TIMEOUT_SECONDS`
+limits only the initial POST to a provider.
 Every API worker runs a watchdog; conditional attempt updates let only one
 worker claim a pending dispatch. The attempt's external ID is fixed before
 the HTTP request and remains stable for retries. If a worker dies after

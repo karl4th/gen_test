@@ -176,8 +176,7 @@ async def dispatch_attempt(
             .values(
                 status=AttemptStatus.SENT,
                 sent_at=func.now(),
-                deadline_at=func.now()
-                + timedelta(seconds=settings.provider_timeout_seconds),
+                deadline_at=func.now() + timedelta(seconds=settings.provider_timeout),
             )
             .returning(Attempt.task_id, Attempt.provider, Attempt.external_id)
         )
@@ -236,9 +235,7 @@ async def settle_attempt(
                 select(Task).where(Task.id == attempt.task_id).with_for_update()
             )
         ).scalar_one()
-        attempt = (
-            await conn.execute(select(Attempt).where(Attempt.id == attempt_id))
-        ).scalar_one()
+        await conn.refresh(attempt)
         if (
             task.status != TaskStatus.RUNNING
             or task.current_attempt_id != attempt_id
@@ -247,6 +244,7 @@ async def settle_attempt(
             if (
                 outcome == "completed"
                 and result_url
+                and attempt.status in (AttemptStatus.FAILED, AttemptStatus.TIMED_OUT)
                 and attempt.late_result_url is None
             ):
                 await conn.execute(
@@ -298,7 +296,17 @@ async def settle_attempt(
                 Leg.max_ref_images >= func.jsonb_array_length(Task.ref_images),
                 Task.id == task.id,
             ]
-            if error_type == ProviderErrorType.MODERATION:
+            moderation_seen = (
+                await conn.execute(
+                    select(func.count())
+                    .select_from(Attempt)
+                    .where(
+                        Attempt.task_id == task.id,
+                        Attempt.error_type == ProviderErrorType.MODERATION,
+                    )
+                )
+            ).scalar_one() > 0
+            if moderation_seen:
                 condition.append(Leg.skip_on_moderation.is_(False))
             next_leg = (
                 await conn.execute(

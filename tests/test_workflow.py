@@ -201,6 +201,24 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["attempts"][0]["error_type"], "technical")
         self.assertEqual(task["attempts"][1]["status"], "succeeded")
 
+    async def test_simultaneous_fake_provider_callbacks_keep_one_charge(self) -> None:
+        await self.credit()
+        await self.configure("alpha", duplicate_webhooks=True)
+        task_id = await self.generate()
+        task = await self.wait_task(task_id, lambda x: x["status"] == "completed")
+        self.assertEqual(len(task["attempts"]), 1)
+        await asyncio.sleep(0.2)
+        task = (await self.client.get(f"/tasks/{task_id}")).json()
+        self.assertIsNone(task["attempts"][0]["late_result_url"])
+        async with self.db.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text("SELECT reason, delta FROM ledger WHERE task_id = :id"),
+                    {"id": task_id},
+                )
+            ).all()
+        self.assertEqual(rows, [("charge", -2)])
+
     async def test_late_completion_after_watchdog_cannot_resurrect_refund(self) -> None:
         await self.credit()
         await self.configure("alpha", no_webhook=True)
@@ -280,18 +298,27 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(invalid.status_code, 400)
-        tasks = await asyncio.gather(*(self.generate() for _ in range(3)))
-        self.assertEqual(len(set(tasks)), 3)
-        fourth = await self.client.post(
-            "/generate",
-            json={
-                "user_id": self.user_id,
-                "model_slug": "image-fast",
-                "prompt": "test",
-                "ref_images": [],
-            },
+        orders = await asyncio.gather(
+            *(
+                self.client.post(
+                    "/generate",
+                    json={
+                        "user_id": self.user_id,
+                        "model_slug": "image-fast",
+                        "prompt": "test",
+                        "ref_images": [],
+                    },
+                )
+                for _ in range(4)
+            )
         )
-        self.assertEqual(fourth.status_code, 429)
+        self.assertEqual(
+            sorted(order.status_code for order in orders), [202, 202, 202, 429]
+        )
+        task_ids = [
+            order.json()["task_id"] for order in orders if order.status_code == 202
+        ]
+        self.assertEqual(len(set(task_ids)), 3)
         self.assertEqual(
             (await self.client.get(f"/users/{self.user_id}/balance")).json()["balance"],
             14,
@@ -323,6 +350,40 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             100,
         )
 
+    async def test_moderation_skips_later_flagged_leg_after_technical_failure(
+        self,
+    ) -> None:
+        slug = f"moderation-chain-{uuid4()}"
+        async with self.db.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO models (slug, price) VALUES (:slug, 2)"),
+                {"slug": slug},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO legs "
+                    "(model_slug, provider, priority, max_ref_images, skip_on_moderation) "
+                    "VALUES (:slug, 'alpha', 1, 0, false), "
+                    "(:slug, 'beta', 2, 0, false), "
+                    "(:slug, 'alpha', 3, 0, true)"
+                ),
+                {"slug": slug},
+            )
+        await self.credit()
+        await self.configure("alpha", failure_rate=1, failure_type="moderation")
+        await self.configure("beta", failure_rate=1, failure_type="technical")
+        task_id = await self.generate(slug)
+        task = await self.wait_task(task_id, lambda x: x["status"] == "failed")
+        self.assertEqual(len(task["attempts"]), 2)
+        self.assertEqual([a["provider"] for a in task["attempts"]], ["alpha", "beta"])
+        self.assertEqual(
+            [a["error_type"] for a in task["attempts"]], ["moderation", "technical"]
+        )
+        self.assertEqual(
+            (await self.client.get(f"/users/{self.user_id}/balance")).json()["balance"],
+            100,
+        )
+
     async def test_payload_failure_is_terminal_and_signature_is_required(self) -> None:
         await self.credit()
         unsigned = await self.client.post(
@@ -335,6 +396,20 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(unsigned.status_code, 401)
+        invalid_payment = await self.signed_post(
+            "/webhooks/payments",
+            {
+                "payment_id": str(uuid4()),
+                "user_id": self.user_id,
+                "status": "succeeded",
+            },
+        )
+        self.assertEqual(invalid_payment.status_code, 422)
+        invalid_provider = await self.signed_post(
+            "/webhooks/providers/alpha",
+            {"external_id": str(uuid4()), "status": "completed"},
+        )
+        self.assertEqual(invalid_provider.status_code, 422)
         await self.configure("alpha", failure_rate=1, failure_type="payload")
         task_id = await self.generate()
         task = await self.wait_task(task_id, lambda x: x["status"] == "failed")

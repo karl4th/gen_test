@@ -5,7 +5,7 @@ from uuid import UUID
 
 from asyncpg import PostgresError
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,7 +97,10 @@ async def payment_webhook(request: Request) -> dict[str, str]:
         request.headers.get("X-Signature"),
         request.app.state.settings.webhook_secret,
     )
-    event = PaymentWebhook.model_validate_json(body)
+    try:
+        event = PaymentWebhook.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid payment webhook") from exc
     await record_payment(request.app.state.database, event)
     return {"status": "accepted"}
 
@@ -112,7 +115,10 @@ async def provider_webhook(name: str, request: Request) -> dict[str, str]:
         request.headers.get("X-Signature"),
         request.app.state.settings.webhook_secret,
     )
-    event = ProviderWebhook.model_validate_json(body)
+    try:
+        event = ProviderWebhook.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid provider webhook") from exc
     await handle_provider_webhook(
         request.app.state.database, request.app.state.settings, name, event
     )
@@ -122,8 +128,11 @@ async def provider_webhook(name: str, request: Request) -> dict[str, str]:
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: UUID, request: Request) -> TaskResponse:
     async with AsyncSession(request.app.state.database) as conn:
+        # Keep the task and its attempt history on one committed transition.
         task = (
-            await conn.execute(select(Task).where(Task.id == task_id))
+            await conn.execute(
+                select(Task).where(Task.id == task_id).with_for_update(read=True)
+            )
         ).scalar_one_or_none()
         if task is None:
             raise HTTPException(404, "Unknown task")
@@ -160,8 +169,11 @@ async def get_task(task_id: UUID, request: Request) -> TaskResponse:
 @app.get("/users/{user_id}/balance", response_model=BalanceResponse)
 async def get_balance(user_id: int, request: Request) -> BalanceResponse:
     async with AsyncSession(request.app.state.database) as conn:
+        # A shared row lock keeps the balance and ledger page consistent.
         user = (
-            await conn.execute(select(User).where(User.id == user_id))
+            await conn.execute(
+                select(User).where(User.id == user_id).with_for_update(read=True)
+            )
         ).scalar_one_or_none()
         if user is None:
             raise HTTPException(404, "Unknown user")
